@@ -3228,7 +3228,7 @@
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
   K.splineCurvatureAt = splineCurvatureAt;   // rfAY
   K.isBSpline = isBSpline; K.bsValid = bsValid; K.bsBlossom = bsBlossom; K.bsPieces = bsPieces; K.bsFromPieces = bsFromPieces; K.bsSub = bsSub; K.bsInsertKnot = bsInsertKnot; K.bzBlossom = bzBlossom;   // lane fitspline
-  K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
+  K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree; K.freeEval = freeEval;   // (rfRF: freeEval(profile.free[k], u) -> the point of a spline or ellipse record at parameter u)
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
   K.syncTextPaths = syncTextPaths; K.textEntityRemoved = textEntityRemoved; K.remapTextPaths = remapTextPaths; K.transformText = transformText;

@@ -3264,7 +3264,9 @@ var UI = (function () {
   // facets are joined across smooth (tangent, < 22°) edges when both come from the same sweep, loft or fillet feature
   // (or a pattern / mirror of one) in the same body. Other features are left alone, so a flat face tangent to a bend,
   // an offset wall or a line-to-spline extrude keeps its own identity, as in SolidWorks.
-  var FREEFORM = { sweep: 1, loft: 1, fillet: 1 };
+  // (rfRF: a Wrap's walls too: a contour's arc wrapped round a cylinder is a strip per chord on Anvil's own kernel, so
+  // the walls joined by tangent edges pick as one face there; OpenCascade has one true face per sketch curve)
+  var FREEFORM = { sweep: 1, loft: 1, fillet: 1, wrap: 1 };
   function freeformGroups(mesh, of) {
     if (!App.model || !App.model.features || !mesh.faces.length || !mesh.faces[0].polys) return;
     var kindOf = {};

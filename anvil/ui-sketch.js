@@ -4801,7 +4801,10 @@
     if (changed) UI.updateHighlights();
     if (hover && hover.kind === 'face' && App.mesh.faces[hover.index]) {
       var f = App.mesh.faces[hover.index];
-      var txt = 'Face ' + hover.index + '  area ' + UI.fmtNum(f.area, 1) + ' ' + UI.unitLabel() + '²';
+      // rfRF: the area of the whole face lit (a curved face is many mesh faces: it read "area 0" for one strip of it)
+      var harea = 0;
+      (UI.faceGroup ? UI.faceGroup(hover.index) : [hover.index]).forEach(function (gi) { harea += (App.mesh.faces[gi] || {}).area || 0; });
+      var txt = 'Face ' + hover.index + '  area ' + UI.fmtNum(harea, harea < 10 ? 3 : 1) + ' ' + UI.unitLabel() + '²';
       // multi-body parts: say which body the face belongs to (Body: Boss-Extrude2)
       // assemblies: say which component (Component: Pin<1>)
       if (UI.isAssembly && UI.isAssembly()) txt += '  Component: ' + UI.bodyName(f.body || 0);

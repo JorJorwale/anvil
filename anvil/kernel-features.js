@@ -3547,14 +3547,78 @@
         });
         pts = fine;
       }
-      var st = pts.map(L.toST);
-      if (signedArea(st) < 0) st.reverse();
+      var st = pts.map(L.toST), rev = signedArea(st) < 0;
+      if (rev) st.reverse();
       var lo = Infinity, hi = -Infinity;
       st.forEach(function (p) { lo = Math.min(lo, p[0]); hi = Math.max(hi, p[0]); });
       if (L.kind !== 'plane' && hi - lo >= 2 * Math.PI - 1e-9) throw new Error('Wrap: the sketch is longer than the way round the face.');
-      return { st: st, pts: l.pts, seg: l.seg, depth: l.depth || 0, hole: !!l.hole };
+      var oc = null;
+      if (!L.prism) try { oc = wrapRuns(L, l, profile, rev); } catch (eR) { oc = null; }
+      return { st: st, pts: l.pts, seg: l.seg, depth: l.depth || 0, hole: !!l.hole, oc: oc };
     });
     return L;
+  }
+  // rfRF: the outline of one loop for OpenCascade (occt-kernel.js wrapLoopFace), which draws each curved piece as one
+  // true edge, so its wall is one face and not a strip per chord: { st: points in (s, t) like the loop's own st, on
+  // the true curves, run: per edge st[j] -> st[j + 1] null (a straight edge) or an object, the same one for every
+  // edge of one smooth piece }; null when the loop has no curved piece. A piece is: an arc or circle of the sketch
+  // (on a cylinder the object is its circle { c: [R·θ, z], r }, exact there, as the sketch plane unrolls without
+  // stretch; full: a whole circle; a glyph of Sketch Text is arcs and lines too), a spline or ellipse (loop.fseg), and
+  // a line on a cone (its image is curved).
+  function wrapRuns(L, l, profile, rev) {
+    var P = l.pts, n = P.length, curves = profile.curves || [], free = profile.free || [], memo = {}, key = new Array(n), i;
+    function arcOf(i) {
+      var k = l.seg ? l.seg[i] : -1, C = k >= 0 ? curves[k] : null;
+      if (!C || !(C.r > 0)) return null;
+      var a = P[i], b = P[(i + 1) % n], tol = 1e-7 + 1e-6 * C.r;
+      return Math.abs(Math.hypot(a[0] - C.c[0], a[1] - C.c[1]) - C.r) <= tol && Math.abs(Math.hypot(b[0] - C.c[0], b[1] - C.c[1]) - C.r) <= tol ? C : null;
+    }
+    function freeOf(i) { var q = l.fseg ? l.fseg[i] : -1; return q && q !== -1 && free[q[0]] && K.freeEval ? q : null; }
+    function chord(i) { var a = P[i], b = P[(i + 1) % n]; return Math.hypot(b[0] - a[0], b[1] - a[1]); }
+    for (i = 0; i < n; i++) {
+      var C = arcOf(i), q = C ? null : freeOf(i);
+      if (C) {
+        var kc = 'c' + l.seg[i];
+        if (!memo[kc]) { memo[kc] = {}; if (L.kind === 'cyl') { var cc = L.toST(C.c); memo[kc].c = [cc[0] * L.R, cc[1]]; memo[kc].r = C.r; } }
+        key[i] = memo[kc];
+      } else if (q) key[i] = memo['f' + q[0]] || (memo['f' + q[0]] = {});
+      else key[i] = null;
+    }
+    // an arc whose points are not on its circle to 1e-9 is drawn through its points like any other smooth piece: exact
+    // arcs must end on the very points their neighbours start at
+    for (i = 0; i < n; i++) {
+      var rk = key[i], Ck = rk && rk.r ? curves[l.seg[i]] : null;
+      if (!Ck) continue;
+      [P[i], P[(i + 1) % n]].forEach(function (p) { if (Math.abs(Math.hypot(p[0] - Ck.c[0], p[1] - Ck.c[1]) - Ck.r) > 1e-9 * Math.max(1, Ck.r)) rk.off = true; });
+    }
+    Object.keys(memo).forEach(function (k) { if (memo[k].off) { delete memo[k].r; delete memo[k].c; delete memo[k].off; } });
+    var sub = P.map(function (p, i) { return L.maxEdge ? Math.max(1, Math.ceil(chord(i) / L.maxEdge)) : 1; });
+    if (L.kind === 'cone') for (i = 0; i < n; i++) if (key[i] == null && sub[i] > 1) key[i] = {};
+    if (!key.some(Boolean)) return null;
+    // the points: a vertex inside a spline or ellipse on the curve itself (the profile's are area-true, a little off
+    // it); the points a long edge is cut at for a cone on the arc / the curve, not on the chord
+    function vertex(i) {
+      var q = freeOf(i), q0 = freeOf((i + n - 1) % n);
+      if (!q || !q0 || q[0] !== q0[0]) return P[i];
+      var t = K.freeEval(free[q[0]], q[1]);
+      return t && Math.hypot(t[0] - P[i][0], t[1] - P[i][1]) < 0.25 * Math.min(chord(i), chord((i + n - 1) % n)) ? t : P[i];
+    }
+    function inside(i, f) {
+      var a = P[i], b = P[(i + 1) % n], lin = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], C = arcOf(i), q = C ? null : freeOf(i), t = null;
+      if (C) {
+        var a0 = Math.atan2(a[1] - C.c[1], a[0] - C.c[0]), da = Math.atan2(b[1] - C.c[1], b[0] - C.c[0]) - a0;
+        while (da > Math.PI) da -= 2 * Math.PI;
+        while (da < -Math.PI) da += 2 * Math.PI;
+        t = [C.c[0] + C.r * Math.cos(a0 + da * f), C.c[1] + C.r * Math.sin(a0 + da * f)];
+      } else if (q) t = K.freeEval(free[q[0]], q[1] + (q[2] - q[1]) * f);
+      return t && Math.hypot(t[0] - lin[0], t[1] - lin[1]) < 0.5 * chord(i) ? t : lin;
+    }
+    var pts = [], run = [];
+    for (i = 0; i < n; i++) for (var j = 0; j < sub[i]; j++) { pts.push(j ? inside(i, j / sub[i]) : vertex(i)); run.push(key[i]); }
+    var st = pts.map(L.toST), m = st.length;
+    if (rev) { st.reverse(); run = run.map(function (r, j) { return run[(2 * m - 2 - j) % m]; }); }
+    if (run[0] && run[0].r && run.every(function (r) { return r === run[0]; })) run[0].full = true;   // a whole circle: one closed edge
+    return { st: st, run: run };
   }
   // strip lines (s values) for one loop: its ends, every s where an edge runs along t (exact walls there), and as many
   // between as dsMax needs

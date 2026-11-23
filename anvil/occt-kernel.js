@@ -1844,7 +1844,10 @@ var OcctKernel = (function () {
       var n = l.length, corners = [];
       l.forEach(function (p, i) {
         var a = l[(i + n - 1) % n], b = l[(i + 1) % n], d1 = [p[0] - a[0], p[1] - a[1]], d2 = [b[0] - p[0], b[1] - p[1]];
-        if (cvs ? !(cvs[i] && cvs[i] === cvs[(i + n - 1) % n]) : straight || Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
+        // (rfRF: an entry without a radius is a piece of some other smooth curve, drawn as the cubic through its points;
+        // a turn of more than 30° inside one is a corner all the same)
+        var trn = Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1]));
+        if (cvs ? !(cvs[i] && cvs[i] === cvs[(i + n - 1) % n]) || (!cvs[i].r && trn > 0.5) : straight || trn > 0.5) corners.push(i);
       });
       var runs = [];
       if (!corners.length) runs.push({ pts: l.concat([l[0]]), closed: true, at: 0 });
@@ -1855,10 +1858,10 @@ var OcctKernel = (function () {
       });
       runs.forEach(function (run) {
         var P0 = run.pts, m = P0.length - 1, crv, cf = cvs ? null : m >= 2 ? fitCircle(P0) : null;
-        if (cvs && cvs[run.at]) {
+        if (cvs && cvs[run.at] && cvs[run.at].r) {
           var rc = cvs[run.at], turn = 0;
           for (var ti = 0; ti < m; ti++) turn += (P0[ti][0] - rc.c[0]) * (P0[ti + 1][1] - rc.c[1]) - (P0[ti][1] - rc.c[1]) * (P0[ti + 1][0] - rc.c[0]);
-          cf = { c: rc.c, r: rc.r, ccw: turn > 0 };
+          cf = { c: rc.c, r: rc.r, ccw: turn > 0, full: rc.full };
         }
         if (m < 2 && !cf) crv = N(N(new oc.GCE2d_MakeSegment_1(pnt2(P0[0]), pnt2(P0[1]))).Value()).get();
         else if (cf) {
@@ -1867,8 +1870,12 @@ var OcctKernel = (function () {
           var cu = ku * cf.c[0], cv = cf.c[1], au = ku * cf.r, av = cf.r, alongU = au >= av;
           var el = N(new oc.gp_Elips2d_2(N(new oc.gp_Ax2d_2(N(new oc.gp_Pnt2d_3(cu, cv)), N(new oc.gp_Dir2d_4(alongU ? 1 : 0, alongU ? 0 : 1)))), Math.max(au, av), Math.min(au, av), true));
           var phi = function (q) { var x = ku * q[0] - cu, y = q[1] - cv; return alongU ? Math.atan2(y / av, x / au) : Math.atan2(-x / au, y / av); };
-          if (run.closed) crv = new oc.Geom2d_Ellipse_1(el);   // the handle below owns it
-          else crv = N(N(new oc.GCE2d_MakeArcOfEllipse_1(el, phi(P0[0]), phi(P0[m]), cf.ccw)).Value()).get();
+          // (rfRF, cf.full: a Wrap's whole circle as the arc of the full turn, one closed edge; the native engine has no Geom2d_Ellipse)
+          if (run.closed && cf.full) crv = N(N(new oc.GCE2d_MakeArcOfEllipse_1(el, 0, 2 * Math.PI, true)).Value()).get();
+          else if (run.closed) crv = new oc.Geom2d_Ellipse_1(el);   // the handle below owns it
+          // (rfRF: a clockwise run is the counter-clockwise arc from its end to its start, the wire turns the edge round;
+          // Sense = false gave the other part of the ellipse: a glyph's inward arcs came out as the long way round)
+          else crv = N(N(new oc.GCE2d_MakeArcOfEllipse_1(el, phi(P0[cf.ccw ? 0 : m]), phi(P0[cf.ccw ? m : 0]), true)).Value()).get();
         } else {
           var d = [], tg = [];
           for (var i = 0; i < m; i++) d.push(Math.max(1e-12, Math.hypot(P0[i + 1][0] - P0[i][0], P0[i + 1][1] - P0[i][1])));
@@ -3980,11 +3987,23 @@ var OcctKernel = (function () {
       if (!acc) throw new Error('Wrap: the sketch has no closed contour.');
       return acc;
     }
-    function wrapLoopFace(L, l, hh) {
+    function wrapLoopFace(L, l, hh, chords) {
       if (L.prism) {
         var mf = N(new oc.BRepBuilderAPI_MakeFace_15(loopWire({ pts: l.pts, seg: l.seg }, L.profile, L.prism), true));
         if (!mf.IsDone()) throw new Error('Wrap: OpenCascade could not make a contour face.');
         return moveTo(N(mf.Face()), L.prismSign * hh, L.prism);
+      }
+      // rfRF: every curved piece of the outline as one true edge (Kernel.wrapLayout's loop.oc, outlineWire), so its
+      // wall is one face and not a strip per chord; Anvil's own wrap keeps the chords, hence the loose volume check
+      // (kept only when its area is that of the chord outline's face to 3 %: an outline that came out as the rest of a
+      // closed surface, or crossed itself, is not)
+      l.ocUsed = false;
+      if (l.oc && !chords) {
+        try {
+          var fx = wrapTrueFace(L, l.oc, hh), ar = fx ? wrapArea(wrapLoopFace(L, l, hh, true)) : 0;
+          if (fx && ar > 0 && Math.abs(wrapArea(fx) - ar) <= 0.03 * ar) { l.ocUsed = true; if (L.mode !== 'scribe') approx = true; return fx; }
+        } catch (eX) { /* the chords below */ }
+        l.ocUsed = false;
       }
       if (L.kind === 'plane') return polyFace3(l.st.map(function (p) { return L.G(p[0], p[1], hh); }));
       var rec = L.rec(hh), ax = N(new oc.gp_Ax3_3(P(L.o), Dir(L.dd), Dir(L.e1)));
@@ -4004,8 +4023,37 @@ var OcctKernel = (function () {
       if (!fm.IsDone()) throw new Error('Wrap: OpenCascade could not make a wrapped face.');
       return N(fm.Face());
     }
+    // the face of one contour at height hh bounded by its true curves, or null. Cylinder: the points as (R·θ, z) with
+    // u = θ, a sketch arc exactly an ellipse; cone: (θ, the length along the generator); a flat face the sketch is
+    // not parallel to: its own frame, the outline counter-clockwise about its normal.
+    function wrapTrueFace(L, O, hh) {
+      var pts, run = O.run, surf, ku = 1;
+      if (L.kind === 'plane') {
+        var W3 = O.st.map(function (p) { return L.G(p[0], p[1], hh); }), nz = L.n, x = V.sub(L.plane.x, V.scale(nz, V.dot(L.plane.x, nz)));
+        if (V.len(x) < 1e-6) x = V.sub(L.plane.y, V.scale(nz, V.dot(L.plane.y, nz)));
+        x = V.norm(x);
+        var y = V.cross(nz, x), area = 0, m = W3.length;
+        pts = W3.map(function (q) { var d = V.sub(q, W3[0]); return [V.dot(d, x), V.dot(d, y)]; });
+        pts.forEach(function (a, j) { var b = pts[(j + 1) % m]; area += a[0] * b[1] - b[0] * a[1]; });
+        if (area < 0) { pts.reverse(); run = run.map(function (r, j) { return O.run[(2 * m - 2 - j) % m]; }); }
+        surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_Plane_1(N(new oc.gp_Ax3_3(P(W3[0]), Dir(nz), Dir(x)))))));
+      } else {
+        var rec = L.rec(hh), ax = N(new oc.gp_Ax3_3(P(L.o), Dir(L.dd), Dir(L.e1)));
+        if (L.kind === 'cyl') { surf = N(new oc.Handle_Geom_Surface_2(new oc.Geom_CylindricalSurface_1(ax, rec.r))); pts = O.st.map(function (p) { return [p[0] * L.R, p[1]]; }); ku = 1 / L.R; }
+        else { var cv = Math.cos(Math.atan(L.k)); surf = N(new oc.Handle_Geom_Surface_2(new oc.Geom_ConicalSurface_1(ax, Math.atan(L.k), rec.r))); pts = O.st.map(function (p) { return [p[0], p[1] / cv]; }); }
+      }
+      var fm = N(new oc.BRepBuilderAPI_MakeFace_21(surf, outlineWire(pts, surf, ku, run), true));
+      return fm.IsDone() ? N(fm.Face()) : null;
+    }
+    function wrapArea(s) { var g = N(new oc.GProp_GProps_1()); oc.BRepGProp.SurfaceProperties_1(s, g, false, false); return g.Mass(); }
+    // (rfRF: a solid made from the true outline that does not pass the shape check is made again from the chords)
     function wrapLoopSolid(L, l, a, b) {
-      var face = wrapLoopFace(L, l, a);
+      var s = wrapSolidOf(L, l, a, b, false);
+      if (l.ocUsed) { var okS = false; try { okS = N(new oc.BRepCheck_Analyzer(s, true, false)).IsValid_2(); } catch (eV) { okS = false; } if (!okS) s = wrapSolidOf(L, l, a, b, true); }
+      return s;
+    }
+    function wrapSolidOf(L, l, a, b, chords) {
+      var face = wrapLoopFace(L, l, a, chords);
       if (L.prism) return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(L.prism.n, L.prismSign * (b - a))), false, true)).Shape());
       if (L.kind === 'plane') return N(N(new oc.BRepPrimAPI_MakePrism_1(face, Vec(V.scale(L.n, L.sigma * (b - a))), false, true)).Shape());
       // the face's normal is the surface's (the radial direction for u = θ); sigma turns it to the material's outward one
